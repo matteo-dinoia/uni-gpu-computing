@@ -13,4 +13,7 @@ CFLAGS=$(OPT) $(INCLUDE)
 all: main
 
 main: main.c Makefile
-	$(CC) $(CFLAGS) main.c -o main
+	$(CC) $(CFLAGS) main.c -o main.out
+
+clean:
+	rm -f main.out

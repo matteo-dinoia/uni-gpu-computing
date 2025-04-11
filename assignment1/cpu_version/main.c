@@ -5,57 +5,19 @@
 #include <stdbool.h>
 #include <strings.h>
 
-#include "include/my_time_lib.h"
+#include "include/time_utils.h"
+#include "include/vec_matrix.h"
+#include "include/mtx.h"
 
-#define M_TYPE double
+#define WARM_CYCLES 100
+#define TEST_CYCLES 400
+#define INPUT_FILENAME "input2.mtx"
+
 #define OK true
 #define ERR false
 
-#define WARM_CYCLES 10
-#define TEST_CYCLES 40
-
-// Function to skip comments and read metadata from the MTX file
-bool read_mtx_header(FILE *file, int *rows, int *cols, int *non_zeros)
-{
-    int ch;
-
-    // Skip any initial whitespace or comments
-    while ((ch = fgetc(file)) == '%') {
-        while ((ch = fgetc(file)) != EOF && ch != '\n');  // Discards the entire line.
-    }
-    ungetc(ch, file);
-
-    // Read the matrix dimensions and non-zero entries
-    if (fscanf(file, "%d %d %d", rows, cols, non_zeros) != 3) {
-        return false;
-    }
-
-    return true;
-}
-
-bool read_mtx_data(FILE *file, int *coords_x, int *coords_y, double *vals, int LEN)
-{
-    if (coords_x == NULL ||  coords_y == NULL || vals == NULL) {
-        printf("Null pointer in read mtx data is null");
-        return false;
-    }
-    int row, col;
-    double value;
-    int i = 0;
-
-    while (fscanf(file, "%d %d %lf", &col, &row, &value) == 3) {
-        // Store the entry (adjust 1-based index to 0-based)
-        coords_x[i] = row - 1;
-        coords_y[i] = col - 1;
-        vals[i] = value;
-        i++;
-    }
-
-    return i == LEN;
-}
-
 // ASSUME it is zeroed the res vector
-void gemm_sparse(const int *cx, const int *cy, const M_TYPE* vals, const M_TYPE* vec, M_TYPE* res, const int NON_ZERO)
+void gemm_sparse_coo(const int *cx, const int *cy, const M_TYPE* vals, const M_TYPE* vec, M_TYPE* res, const int NON_ZERO)
 {
     if (cx == NULL || cy == NULL || vals == NULL || vec == NULL || res == NULL) {
         printf("NULL pointeri in GEMM sparse\n");
@@ -64,139 +26,128 @@ void gemm_sparse(const int *cx, const int *cy, const M_TYPE* vals, const M_TYPE*
 
     for (int i = 0; i < NON_ZERO; i++){
         const int row = cy[i];
-        res[row] += vec[row] * vals[i];
+        const int col = cx[i];
+
+        res[row] += vec[col] * vals[i];
     }
 }
 
-void gen_random_vec(M_TYPE *m, const int SIZE)
+// ASSUME it is zeroed the res vector
+void gemm_sparse_csr(const int *cx, const int *csr_y, const M_TYPE* vals, const M_TYPE* vec, M_TYPE* res, const int ROWS)
 {
-    if (m == NULL){
-        printf("NULL pointer in random\n");
+    if (cx == NULL || csr_y == NULL || vals == NULL || vec == NULL || res == NULL) {
+        printf("NULL pointer in GEMM sparse\n");
         return;
     }
 
-    for (int i = 0; i < SIZE; i++){
-        m[i] = rand() % 10;
-    }
-}
+    for (int row = 0; row < ROWS; row++) {
+        const int start = csr_y[row];
+        const int end = csr_y[row + 1];
 
-void print_m(const M_TYPE* res, const int M, const int N)
-{
-    if (res == NULL){
-        printf("NULL pointer in print\n");
-        return;
-    }
-
-    for (int i = 0; i < M; i++){
-        for (int j = 0; j < N; j++){
-            printf("%.4f\t", res[i * N + j]);
+        for (int i = start; i < end; i++) {
+            const int col = cx[i];
+            res[row] += vec[col] * vals[i];
         }
-        printf("\n");
     }
 }
 
-void print_vec(const M_TYPE* res, const int N)
-{
-    if (res == NULL){
-        printf("NULL pointer in print\n");
+// Assume csr_y being of length correct ROWS
+// Assume it is sorted by (0,0), (0,1), ..., (1,0),...
+void convert_to_csr(const int *cy, int *csr_y, const int NON_ZERO, const int ROWS) {
+    if (cy == NULL || csr_y == NULL) {
+        printf("NULL pointer in convert_to_csr\n");
         return;
     }
 
-    for (int i = 0; i < N; i++){
-        printf("%.4f\t", res[i]);
+    bzero(csr_y, sizeof(int) * (ROWS + 1));
+
+    for (int i = 0; i < NON_ZERO; i++) {
+        csr_y[cy[i] + 1]++;
     }
-    printf("\n");
+
+    int sum = 0;
+    for (int i = 0; i < ROWS + 1; i++) {
+        sum = csr_y[i] = csr_y[i] + sum;
+    }
 }
 
 void print_sparse(const int *cx, const int *cy, const M_TYPE* vals, const int NON_ZERO)
 {
     for (int i = 0; i < NON_ZERO; i++){
-        printf("%.4f in (%d, %d)\n", vals[i], cx[i], cy[i]);
+        printf("%.2e in (col %d, row %d)\n", vals[i], cx[i], cy[i]);
     }
     printf("\n");
 }
 
-void print_info(const int *cx, const int *cy, const M_TYPE* vals, const M_TYPE* vec, const M_TYPE* res, const int NON_ZERO, const int ROWS) {
-    printf("\nA:\n");
-    print_sparse(cx, cy, vals, NON_ZERO);
-    printf("\nB:\n");
-    print_vec(vec, ROWS);
-    printf("\nRES:\n");
-    print_vec(res, ROWS);
-}
-
-// TODO FINISH EX BEFORE
 int main()
 {
     int ROWS, COLS, NON_ZERO;
     FILE *file;
-
+    TIMER_DEF(0);
     TIMER_DEF(1);
-    TIMER_START(1);
-    {
-        file = fopen("input.mtx", "r");
+    srand(time(0) * 5);
+
+    // LETTURA HEADER --------------------------------------------------------------
+    TIMER_TIME(0, {
+        file = fopen(INPUT_FILENAME, "r");
         const bool status = read_mtx_header(file, &ROWS, &COLS, &NON_ZERO);
         if (status == ERR) return -1;
-    }
-    TIMER_STOP(1);
-    printf("%fms\n", TIMER_ELAPSED(1) / 1.e6);
+    });
+    printf("READ HEADER: %fms\n", TIMER_ELAPSED(0) / 1.e3);
 
+    // CREAZIONE VARIABILI ----------------------------------------------------------
     int *coords_x = calloc(NON_ZERO, sizeof(int));
     int *coords_y = calloc(NON_ZERO, sizeof(int));
-    double *vals = calloc(NON_ZERO, sizeof(double));
-    double *vec = calloc(ROWS, sizeof(double));
-    double *res = calloc(ROWS, sizeof(double));
-    double *times = calloc(TEST_CYCLES, sizeof(double));
+    int *csr_y = calloc((NON_ZERO + 1), sizeof(int));
+    M_TYPE *vals = calloc(NON_ZERO, sizeof(M_TYPE));
+    M_TYPE *vec = calloc(COLS, sizeof(M_TYPE));
+    M_TYPE *res1 = calloc(ROWS, sizeof(M_TYPE));
+    M_TYPE *res2 = calloc(ROWS, sizeof(M_TYPE));
+    double *times_coo = calloc(TEST_CYCLES, sizeof(double));
+    double *times_csr = calloc(TEST_CYCLES, sizeof(double));
 
-    TIMER_DEF(2);
-    TIMER_START(2);
-    {
+    // CREAZIONE DATA --------------------------------------------------------------
+    TIMER_TIME(0, {
         const bool status = read_mtx_data(file, coords_x, coords_y, vals, NON_ZERO);
         if (status == ERR) return -1;
-    }
-    TIMER_STOP(2);
-    printf("%fms\n", TIMER_ELAPSED(2) / 1.e6);
+    });
 
-    srand(time(0) * 5);
-    gen_random_vec(vec, ROWS);
+    gen_random_vec_double(vec, COLS);
 
-    TIMER_DEF(0);
+    // CSR CONVERTION --------------------------------------------------------------
+    TIMER_TIME(0, {
+        convert_to_csr(coords_y, csr_y, NON_ZERO, ROWS);
+    });
+    printf("CONVERT TO CSR: %fms\n", TIMER_ELAPSED(0) / 1.e3);
+
+    // TIMING OF GEMM_SPARSE --------------------------------------------------------
+    int wrong = 0;
     for (int i = -WARM_CYCLES; i < TEST_CYCLES; i++) {
         // Reset
-        bzero(res, ROWS * sizeof(double));
+        bzero(res1, ROWS * sizeof(double));
+        bzero(res2, ROWS * sizeof(double));
 
         // TEST
-        TIMER_START(0);
-        gemm_sparse(coords_x, coords_y, vals, vec, res, NON_ZERO);
-        TIMER_STOP(0);
+        TIMER_TIME(0, gemm_sparse_coo(coords_x, coords_y, vals, vec, res1, NON_ZERO));
+        if (i >= 0) times_coo[i] = TIMER_ELAPSED(0) / 1.e6;
 
-        // Stats
-        if (i >= 0)
-            times[i] = TIMER_ELAPSED(0) / 1.e6;
+        TIMER_TIME(1, gemm_sparse_csr(coords_x, csr_y, vals, vec, res2, ROWS));
+        if (i >= 0) times_csr[i] = TIMER_ELAPSED(1) / 1.e6;
     }
 
-    double average = 0, variance = 0;
-    for (int i = 0; i < TEST_CYCLES; i++) {
-        average += times[i] / TEST_CYCLES;
-    }
-    for (int i = 0; i < TEST_CYCLES; i++) {
-        const double diff = times[i] - average;
-        variance += diff * diff / TEST_CYCLES;
-    }
-    const double std_dev = sqrt(variance);
+    // TIMING ------------------------------------------------------------------
+    print_time_data("COO", times_coo, TEST_CYCLES, 2 * NON_ZERO);
+    print_time_data("CSR", times_csr, TEST_CYCLES, 2 * NON_ZERO);
 
-    // FREE
+    // FREE  -------------------------------------------------------------------
     free(coords_x);
     free(coords_y);
     free(vals);
     free(vec);
-    free(res);
-    free(times);
-
-
-    const double flops1 = (2 * NON_ZERO) / average;
-    printf("MY IMP TIME avarage %fms (%f MFLOP/S) over %d size and %d tests [with std. dev. = %f]\n",
-            average * 1e3, flops1 / 1e6, NON_ZERO, TEST_CYCLES, std_dev);
-
+    free(res1);
+    free(res2);
+    free(times_coo);
+    free(times_csr);
+    free(csr_y);
     return 0;
 }
