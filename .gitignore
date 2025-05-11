@@ -5,3 +5,4 @@
 
 cachegrind.out.*
 *.mtx
+*.tar.gz

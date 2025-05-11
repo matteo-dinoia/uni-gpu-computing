@@ -35,6 +35,7 @@ bool read_mtx_data(FILE *file, int *coords_x, int *coords_y, M_TYPE *vals, const
     double value;
     int i = 0;
 
+    // TODO read a line instead
     while (fscanf(file, "%d %d %lf", &col, &row, &value) == 3) {
         // Store the entry (adjust 1-based index to 0-based)
         coords_x[i] = col - 1;
@@ -43,7 +44,12 @@ bool read_mtx_data(FILE *file, int *coords_x, int *coords_y, M_TYPE *vals, const
         i++;
     }
 
-    return i == LEN;
+    if (i != LEN) {
+        printf("ERROR: didn't read the right amount of data\n");
+        printf("INFO: read %d of %d data line\n", i, LEN);
+        return false;
+    }
+    return true;
 }
 
 #endif //MTX_H
