@@ -1,8 +1,7 @@
 #include <iostream>
 
 
-int main(void)
-{
+int main(void) {
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
 

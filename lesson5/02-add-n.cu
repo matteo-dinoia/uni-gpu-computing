@@ -1,28 +1,27 @@
+// Random test
 #include <iostream>
 #include <math.h>
 
 #define MAX_THREAD_PER_BLOCK 1024
 
 // Kernel function to add the elements of two arrays
-__global__ void add(float *x, float *y, float *res)
-{
+__global__ void add(float *x, float *y, float *res) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     res[i] = x[i] + y[i];
 }
 
-int main(void)
-{
+int main(void) {
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    int N = 1<<20;
+    int N = 1 << 25;
     float *x, *y, *res;
     srand(time(0));
     // Allocate Unified Memory accessible from CPU or GPU
-    cudaMallocManaged(&x, N*sizeof(float));
-    cudaMallocManaged(&y, N*sizeof(float));
-    cudaMallocManaged(&res, N*sizeof(float));
+    cudaMallocManaged(&x, N * sizeof(float));
+    cudaMallocManaged(&y, N * sizeof(float));
+    cudaMallocManaged(&res, N * sizeof(float));
 
     // initialize x and y arrays on the host
     for (int i = 0; i < N; i++) {
@@ -40,8 +39,8 @@ int main(void)
 
     // Check for errors (all values should be 3.0f)
     int n_error = 0;
-    for (int i = 0; i < N; i++){
-        if(fabs(x[i] + y[i] - res[i]) > 0.1){
+    for (int i = 0; i < N; i++) {
+        if (fabs(x[i] + y[i] - res[i]) > 0.1) {
             n_error++;
         }
     }
