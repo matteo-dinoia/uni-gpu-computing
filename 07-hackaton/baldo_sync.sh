@@ -1,0 +1,1 @@
+rsync -e "ssh -i ~/.ssh/cluster" -zvrh --update --exclude .git --exclude data --exclude results --exclude .venv --exclude .vscode --exclude bin ./ $UNITN_USER@baldo.disi.unitn.it:~/GPU-computing-hackathon

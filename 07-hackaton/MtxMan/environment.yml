@@ -1,0 +1,7 @@
+name: dist-mmio
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - ssgetpy
+  - pyyaml
