@@ -28,8 +28,9 @@ OBJECTS = $(OBJ_FOLDER)/my_time_lib.o
 DENSE_OBJECTS = $(TARGETDIR)/matrix_generation.o
 PARSER_OBJECTS = $(OBJECTDIR)/matrix_parser.o $(OBJECTDIR)/mmio.o
 
-all:  dense sparse
+all: parser exercise_1
 parser: $(TARGETDIR)/example_parser $(PARSER_OBJECTS)
+exercise_1: $(TARGETDIR)/exercise_1
 
 $(OBJ_FOLDER)/my_time_lib.o: $(LABII_SRC_FOLDER)/my_time_lib.c
 	@mkdir -p $(BIN_FOLDER) $(OBJ_FOLDER) $(BATCH_OUT_FOLDER)
@@ -53,6 +54,11 @@ $(OBJECTDIR)/matrix_parser.o: $(INCDIR)/matrix_parser.cpp $(INCDIR)/matrix_parse
 $(TARGETDIR)/example_parser: example_parser.cpp $(OBJECTDIR)/matrix_parser.o $(OBJECTDIR)/mmio.o
 	mkdir -p $(@D)
 	$(CC) $^ -o $@
+
+$(TARGETDIR)/exercise_1: exercise_1.cpp $(OBJECTDIR)/matrix_parser.o $(OBJECTDIR)/mmio.o
+	mkdir -p $(@D)
+	@mpic++ $^ -o $@
+
 
 clean:
 	rm -rf $(TARGETDIR)/ $(OBJECTDIR)/

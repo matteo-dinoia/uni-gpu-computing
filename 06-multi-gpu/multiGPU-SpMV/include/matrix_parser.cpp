@@ -1,21 +1,21 @@
 #include "matrix_parser.hpp"
 
-template<typename IdxType, typename ValType>
-struct COO<IdxType, ValType>* malloc_coo (int n, int m, int nnz) {
-    struct COO<IdxType, ValType> *coo = (struct COO<IdxType, ValType>*)malloc(sizeof(struct COO<IdxType, ValType>));
+template <typename IdxType, typename ValType>
+struct COO<IdxType, ValType> *malloc_coo(int n, int m, int nnz) {
+    struct COO<IdxType, ValType> *coo = (struct COO<IdxType, ValType> *)malloc(sizeof(struct COO<IdxType, ValType>));
 
     coo->nnz = nnz;
     coo->nrows = n;
     coo->ncols = m;
-    coo->rows_idx = (IdxType*) malloc(nnz * sizeof(IdxType));
-    coo->cols_idx = (IdxType*) malloc(nnz * sizeof(IdxType));
-    coo->values   = (ValType*) malloc(nnz * sizeof(ValType));
+    coo->rows_idx = (IdxType *)malloc(nnz * sizeof(IdxType));
+    coo->cols_idx = (IdxType *)malloc(nnz * sizeof(IdxType));
+    coo->values = (ValType *)malloc(nnz * sizeof(ValType));
 
-    return(coo);
+    return (coo);
 }
 
-template<typename IdxType, typename ValType>
-void free_coo (struct COO<IdxType, ValType> *coo) {
+template <typename IdxType, typename ValType>
+void free_coo(struct COO<IdxType, ValType> *coo) {
     free(coo->rows_idx);
     free(coo->cols_idx);
     free(coo->values);
@@ -23,36 +23,67 @@ void free_coo (struct COO<IdxType, ValType> *coo) {
     return;
 }
 
-int mtxfile_check (FILE *input_file, MM_typecode *matcode) {
-    if (mm_read_banner(input_file, matcode) != 0)
-    {
+int mtxfile_check(FILE *input_file, MM_typecode *matcode) {
+    if (mm_read_banner(input_file, matcode) != 0) {
         printf("Could not process Matrix Market banner.\n");
-        return(1);
+        return (1);
     }
 
     /*  This is how one can screen matrix types if their application */
     /*  only supports a subset of the Matrix Market data types.      */
 
     if (mm_is_complex(*matcode) && mm_is_matrix(*matcode) &&
-            mm_is_sparse(*matcode) )
-    {
+        mm_is_sparse(*matcode)) {
         printf("Sorry, this application does not support ");
         printf("Market Market type: [%s]\n", mm_typecode_to_str(*matcode));
-        return(1);
+        return (1);
     }
 
-    return(0);
+    return (0);
 }
 
-void get_mtx_dims (FILE *f, int *m, int *n, int *nnz) {
+void get_mtx_dims(FILE *f, int *m, int *n, int *nnz) {
     int ret_code;
-    if ((ret_code = mm_read_mtx_crd_size(f, m, n, nnz)) !=0) exit(1);
+    if ((ret_code = mm_read_mtx_crd_size(f, m, n, nnz)) != 0)
+        exit(1);
     return;
 }
 
-template<typename IdxType, typename ValType>
-struct COO<IdxType, ValType>* my_mtx_to_coo (FILE* inputfile, MM_typecode *matcode, int verbose=0) {
-    if (mtxfile_check (inputfile, matcode) != 0) exit(__LINE__);
+template <typename IdxType, typename ValType>
+void filter_coo_with_function(struct COO<IdxType, ValType> *coo, int (*owner_fn)(IdxType, IdxType, IdxType, IdxType, int), int myid, int nproc) {
+    int orig_nnz = coo->nnz;
+
+    int destid, currentsize = 0;
+    IdxType *new_rowidx = (IdxType *)malloc(sizeof(IdxType) * orig_nnz);
+    IdxType *new_colidx = (IdxType *)malloc(sizeof(IdxType) * orig_nnz);
+    ValType *new_values = (ValType *)malloc(sizeof(ValType) * orig_nnz);
+    for (int i = 0; i < orig_nnz; i++) {
+        destid = owner_fn(coo->rows_idx[i], coo->cols_idx[i], coo->nrows, coo->ncols, nproc);
+        if (destid == myid) {
+            new_rowidx[currentsize] = coo->rows_idx[i];
+            new_colidx[currentsize] = coo->cols_idx[i];
+            new_values[currentsize] = coo->values[i];
+            currentsize++;
+        }
+    }
+
+    new_rowidx = (IdxType *)realloc(new_rowidx, currentsize * sizeof(IdxType));
+    new_colidx = (IdxType *)realloc(new_colidx, currentsize * sizeof(IdxType));
+    new_values = (ValType *)realloc(new_rowidx, currentsize * sizeof(ValType));
+    free(coo->rows_idx);
+    free(coo->cols_idx);
+    free(coo->values);
+
+    coo->rows_idx = new_rowidx;
+    coo->cols_idx = new_colidx;
+    coo->values = new_values;
+    coo->nnz = currentsize;
+}
+
+template <typename IdxType, typename ValType>
+struct COO<IdxType, ValType> *my_mtx_to_coo(FILE *inputfile, MM_typecode *matcode, int verbose = 0, int (*owner_fn)(IdxType, IdxType, IdxType, IdxType, int) = nullptr, int myid = 0, int nproc = 0) {
+    if (mtxfile_check(inputfile, matcode) != 0)
+        exit(__LINE__);
 
     int m, n, nnz;
     get_mtx_dims(inputfile, &m, &n, &nnz);
@@ -62,14 +93,14 @@ struct COO<IdxType, ValType>* my_mtx_to_coo (FILE* inputfile, MM_typecode *matco
     /*   specifier as in "%lg", "%lf", "%le", otherwise errors will occur */
     /*  (ANSI C X3.159-1989, Sec. 4.9.6.2, p. 136 lines 13-15)            */
 
-    for (int i=0; i<nnz; i++)
-    {
+    for (int i = 0; i < nnz; i++) {
         fscanf(inputfile, "%d %d %lg\n", &(coo->rows_idx[i]), &(coo->cols_idx[i]), &(coo->values[i]));
-        coo->rows_idx[i]--;  /* adjust from 1-based to 0-based */
+        coo->rows_idx[i]--; /* adjust from 1-based to 0-based */
         coo->cols_idx[i]--;
     }
 
-    if (inputfile !=stdin) fclose(inputfile);
+    if (inputfile != stdin)
+        fclose(inputfile);
 
     /************************/
     /* now write out matrix */
@@ -79,26 +110,30 @@ struct COO<IdxType, ValType>* my_mtx_to_coo (FILE* inputfile, MM_typecode *matco
     mm_write_mtx_crd_size(stdout, m, n, nnz);
 
     if (verbose == 1) {
-        for (int i=0; i<nnz; i++)
-            fprintf(stdout, "%d %d %20.19g\n", coo->rows_idx[i]+1, coo->cols_idx[i]+1, coo->values[i]);
+        for (int i = 0; i < nnz; i++)
+            fprintf(stdout, "%d %d %20.19g\n", coo->rows_idx[i] + 1, coo->cols_idx[i] + 1, coo->values[i]);
     }
 
-    return(coo);
+    if (owner_fn != nullptr)
+        filter_coo_with_function(coo, owner_fn, myid, nproc);
+
+    return (coo);
 }
 
-template<typename ValType>
-struct DENSE<ValType>* malloc_dense (int n, int m) {
-    struct DENSE<ValType> *M = (struct DENSE<ValType>*)malloc(sizeof(struct DENSE<ValType>));
+template <typename ValType>
+struct DENSE<ValType> *malloc_dense(int n, int m) {
+    struct DENSE<ValType> *M = (struct DENSE<ValType> *)malloc(sizeof(struct DENSE<ValType>));
 
-    M->nrows  = n;
-    M->ncols  = m;
-    M->values = (ValType*) malloc(n * m * sizeof(ValType));
+    M->nrows = n;
+    M->ncols = m;
+    M->values = (ValType *)malloc(n * m * sizeof(ValType));
 
-    return(M);
+    return (M);
 }
 
-template<typename ValType>
-void free_dense (struct DENSE<ValType> *M) {
+
+template <typename ValType>
+void free_dense(struct DENSE<ValType> *M) {
     free(M->rows_idx);
     free(M->cols_idx);
     free(M->values);
@@ -106,41 +141,43 @@ void free_dense (struct DENSE<ValType> *M) {
     return;
 }
 
-template<typename IdxType, typename ValType>
-struct DENSE<ValType>* my_coo_to_dense(struct COO<IdxType, ValType> *coo) {
+template <typename IdxType, typename ValType>
+struct DENSE<ValType> *my_coo_to_dense(struct COO<IdxType, ValType> *coo) {
 
     int n = coo->nrows, m = coo->ncols;
     struct DENSE<ValType> *M = malloc_dense<ValType>(n, m);
 
-    for(int i=0; i<n*m; i++) M->values[i] = 0;
-    for(int i=0; i<coo->nnz; i++) M->values[coo->rows_idx[i] * m + coo->cols_idx[i]] = coo->values[i];
-    return(M);
+    for (int i = 0; i < n * m; i++)
+        M->values[i] = 0;
+    for (int i = 0; i < coo->nnz; i++)
+        M->values[coo->rows_idx[i] * m + coo->cols_idx[i]] = coo->values[i];
+    return (M);
 }
 
-template<typename IdxType, typename ValType>
-struct DENSE<ValType>* my_mtx_to_dense (FILE* inputfile, MM_typecode *matcode, int verbose=0) {
-    struct COO<IdxType, ValType> *coo = my_mtx_to_coo<IdxType, ValType>(inputfile, matcode, verbose);
+template <typename IdxType, typename ValType>
+struct DENSE<ValType> *my_mtx_to_dense(FILE *inputfile, MM_typecode *matcode, int verbose = 0, int (*owner_fn)(IdxType, IdxType, IdxType, IdxType, int) = nullptr, int myid = 0, int nproc = 0) {
+    struct COO<IdxType, ValType> *coo = my_mtx_to_coo<IdxType, ValType>(inputfile, matcode, verbose, owner_fn, myid, nproc);
     struct DENSE<ValType> *M = my_coo_to_dense(coo);
     free_coo(coo);
-    return(M);
+    return (M);
 }
 
-template<typename IdxType, typename ValType>
-struct CSR<IdxType, ValType>* malloc_csr(int nrows, int ncols, int nnz) {
-    struct CSR<IdxType, ValType>* csr = (struct CSR<IdxType, ValType>*) malloc(sizeof(struct CSR<IdxType, ValType>));
+template <typename IdxType, typename ValType>
+struct CSR<IdxType, ValType> *malloc_csr(int nrows, int ncols, int nnz) {
+    struct CSR<IdxType, ValType> *csr = (struct CSR<IdxType, ValType> *)malloc(sizeof(struct CSR<IdxType, ValType>));
 
-    csr->nnz     = nnz;
-    csr->nrows   = nrows;
-    csr->ncols   = ncols;
-    csr->rows_ptr = (IdxType*) malloc((nrows + 1) * sizeof(IdxType)); // nrows + 1 for CSR format
-    csr->cols_idx = (IdxType*) malloc(nnz * sizeof(IdxType));
-    csr->values   = (ValType*) malloc(nnz * sizeof(ValType));
+    csr->nnz = nnz;
+    csr->nrows = nrows;
+    csr->ncols = ncols;
+    csr->rows_ptr = (IdxType *)malloc((nrows + 1) * sizeof(IdxType)); // nrows + 1 for CSR format
+    csr->cols_idx = (IdxType *)malloc(nnz * sizeof(IdxType));
+    csr->values = (ValType *)malloc(nnz * sizeof(ValType));
 
     return csr;
 }
 
-template<typename IdxType, typename ValType>
-void free_csr (struct CSR<IdxType, ValType> *csr) {
+template <typename IdxType, typename ValType>
+void free_csr(struct CSR<IdxType, ValType> *csr) {
     free(csr->rows_idx);
     free(csr->cols_idx);
     free(csr->values);
@@ -148,27 +185,31 @@ void free_csr (struct CSR<IdxType, ValType> *csr) {
     return;
 }
 
-template<typename IdxType, typename ValType>
-struct CSR<IdxType, ValType>* my_coo_to_csr(struct COO<IdxType, ValType>* coo) {
+template <typename IdxType, typename ValType>
+struct CSR<IdxType, ValType> *my_coo_to_csr(struct COO<IdxType, ValType> *coo) {
     int n = coo->nrows;
     int m = coo->ncols;
     int nnz = coo->nnz;
 
-    struct CSR<IdxType, ValType>* csr = malloc_csr<IdxType, ValType>(n, m, nnz);
+    struct CSR<IdxType, ValType> *csr = malloc_csr<IdxType, ValType>(n, m, nnz);
 
     // Step 1: Initialize row_ptr to 0
-    for (int i = 0; i <= n; i++) csr->rows_ptr[i] = 0;
+    for (int i = 0; i <= n; i++)
+        csr->rows_ptr[i] = 0;
 
     // Step 2: Count number of entries in each row
-    for (int i = 0; i < nnz; i++) csr->rows_ptr[coo->rows_idx[i] + 1]++;
+    for (int i = 0; i < nnz; i++)
+        csr->rows_ptr[coo->rows_idx[i] + 1]++;
 
     // Step 3: Cumulative sum to get row_ptr
-    for (int i = 0; i < n; i++) csr->rows_ptr[i + 1] += csr->rows_ptr[i];
+    for (int i = 0; i < n; i++)
+        csr->rows_ptr[i + 1] += csr->rows_ptr[i];
 
     // Step 4: Fill cols_idx and values
     // Temp array to hold current position in each row
-    IdxType* curr = (IdxType*) malloc(n * sizeof(IdxType));
-    for (int i = 0; i < n; i++) curr[i] = csr->rows_ptr[i];
+    IdxType *curr = (IdxType *)malloc(n * sizeof(IdxType));
+    for (int i = 0; i < n; i++)
+        curr[i] = csr->rows_ptr[i];
 
     for (int i = 0; i < nnz; i++) {
         int row = coo->rows_idx[i];
@@ -183,19 +224,20 @@ struct CSR<IdxType, ValType>* my_coo_to_csr(struct COO<IdxType, ValType>* coo) {
     return csr;
 }
 
-template<typename IdxType, typename ValType>
-struct CSR<IdxType, ValType>* my_mtx_to_csr (FILE* inputfile, MM_typecode *matcode, int verbose=0) {
-    struct COO<IdxType, ValType> *coo = my_mtx_to_coo<IdxType, ValType>(inputfile, matcode, verbose);
+template <typename IdxType, typename ValType>
+struct CSR<IdxType, ValType> *my_mtx_to_csr(FILE *inputfile, MM_typecode *matcode, int verbose = 0, int (*owner_fn)(IdxType, IdxType, IdxType, IdxType, int) = nullptr, int myid = 0, int nproc = 0) {
+    struct COO<IdxType, ValType> *coo = my_mtx_to_coo<IdxType, ValType>(inputfile, matcode, verbose, owner_fn, myid, nproc);
     struct CSR<IdxType, ValType> *csr = my_coo_to_csr(coo);
     free_coo(coo);
-    return(csr);
+    return (csr);
 }
 
 
 // Entry point
-void* my_mtx_parser(int argc, char* argv[], const char* str_outtype, int verbose) {
+void *
+my_mtx_parser(int argc, char *argv[], const char *str_outtype, int verbose, int (*owner_fn)(IDXTYPE, IDXTYPE, IDXTYPE, IDXTYPE, int), int myid, int nproc) {
     MM_typecode matcode;
-    FILE* f;
+    FILE *f;
 
     if (argc < 2) {
         fprintf(stderr, "Usage: %s [filename]\n", argv[0]);
@@ -208,11 +250,11 @@ void* my_mtx_parser(int argc, char* argv[], const char* str_outtype, int verbose
     }
 
     if (strcmp(str_outtype, "dense") == 0) {
-        return (void*) my_mtx_to_dense<IDXTYPE, VALTYPE>(f, &matcode, verbose);
+        return (void *)my_mtx_to_dense<IDXTYPE, VALTYPE>(f, &matcode, verbose, owner_fn, myid, nproc);
     } else if (strcmp(str_outtype, "coo") == 0) {
-        return (void*) my_mtx_to_coo<IDXTYPE, VALTYPE>(f, &matcode, verbose);
+        return (void *)my_mtx_to_coo<IDXTYPE, VALTYPE>(f, &matcode, verbose, owner_fn, myid, nproc);
     } else if (strcmp(str_outtype, "csr") == 0) {
-        return (void*) my_mtx_to_csr<IDXTYPE, VALTYPE>(f, &matcode, verbose);
+        return (void *)my_mtx_to_csr<IDXTYPE, VALTYPE>(f, &matcode, verbose, owner_fn, myid, nproc);
     } else {
         fprintf(stderr, "Unknown type: %s\n", str_outtype);
         exit(__LINE__);
@@ -220,4 +262,3 @@ void* my_mtx_parser(int argc, char* argv[], const char* str_outtype, int verbose
 
     return nullptr;
 }
-
